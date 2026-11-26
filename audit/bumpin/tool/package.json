@@ -1,0 +1,13 @@
+{
+  "name": "bumpin-audit-tool",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Verificación de PDAs y layouts Anchor de Bumpin Trade (sin RPC)",
+  "scripts": {
+    "verify": "node pdas3.js && node brute.js && node sizes.js",
+    "pdas": "node final_pdas.js"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.0"
+  }
+}

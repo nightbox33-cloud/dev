@@ -248,3 +248,44 @@ mkdir -p /tmp/fixedws && git archive HEAD packages/contracts | tar -x -C /tmp/fi
 Nota: `solc-local-plugin.js` fuerza a Hardhat a usar el `soljson.js` de `solc@0.6.11`
 descargado del registro npm (el host `binaries.soliditylang.org` no es accesible en este
 entorno). `solc` 0.4.23 y 0.5.17 se obtienen igual vía npm.
+
+---
+
+# Auditoría Bumpin Trade (segundo objetivo)
+
+Programa on-chain `bumpinX5wdLt59DBR3eetmV6xB2W3rNGxMoTSc58ah2`
+("Bumpin Trade Program"), Solana mainnet-beta. TVL verificado **3 804 239,70 USD**.
+
+**Veredicto: no crítico demostrado.** El código fuente del programa es **privado**
+(los 3 repos públicos de `bumpin-exchange` no contienen el programa), el binario
+(1 978 333 B de BPF) **no tiene verified build** ni **security.txt**, y el sandbox
+**no tiene RPC** (todos los endpoints RPC dan `SSL_ERROR_SYSCALL`; `fetch_page` sólo
+admite GET y Solana RPC exige POST) ⇒ **no hay reimplementación local posible ni PoC
+ejecutable**, y reportar un "crítico" exigiría especular sobre lógica interna no
+observable.
+
+Lo que **sí** se verificó, sin RPC:
+- **IDL on-chain** (`idl.solana.com`, 23 chunks) → **layouts calculados = tamaños
+  observados on-chain, delta 0** (`User` 7 608 B, `State` 376 B, `Pool` 568 B,
+  `TradeToken` 216 B) ⇒ el IDL es byte-exacto para el binario vivo.
+- **PDAs derivadas localmente y verificadas contra una tx real de mainnet**.
+- **`State`, `Pool`×3, `TradeToken`, `Market`×2, `Rewards` decodificados** vía
+  `/anchor-account` del Solana Explorer; **balances reales reconciliados**
+  (`TradeToken.total_amount` == balance de `trade_token_vault_0`, Δ = 0).
+- **Flujo de `collect_rewards` trazado tx a tx**.
+
+### Hallazgos (ninguno cumple los 4 criterios de crítico)
+| id | severidad | título |
+|---|---|---|
+| H-1 | **Alta** | 3,8 M USD bajo una única EOA upgradeable (`CSjrvxqcMDpW8eZELyHTFkEN7a3HVHuiY9k2SpjiyC2w`, = `State.admin` = upgrade authority), 4 upgrades en 10 meses, sin verified build, sin security.txt |
+| H-2 | Media | `pool_un_claim_amount` = 7 879,89 USDC sin respaldo (`pool_rewards_vault_0` = 0) y por encima de `pool_vault_0` = 800,30 ⇒ **DoS de cobro de recompensas**; la porción DAO se transfiere a una **EOA** externa |
+| H-3 | Media | IDL on-chain con `address` = `94bfdkcc…` ≠ programa desplegado (el Explorer lo marca "potentially fraudulent IDL"); 2 cuentas del programa (8 184 B y 9 012 B) **no decodificables** ⇒ superficie de *stake*/*positions* no auditable |
+| H-4 | Media | Audit CertiK de ene-2025 (44 hallazgos, 0 críticos, 17 "Acknowledged") contra binario vivo de ene-2026 |
+
+**Línea de investigación prioritaria** (análogo del C-1 de Liquity, no demostrable sin
+fuente): la doc del propio IDL distingue `Pool.fee_reward.fee_amount` (fees **físicas**,
+modo isolated) de `un_settle_fee_amount` (fees **sólo contabilizadas**, modo cross).
+Si la ruta cross-margin sumara ambas al distribuir, un operador de cross-margin podría
+acuñar fees.
+
+Documentación completa en [`bumpin/`](bumpin/) — ver [`bumpin/REPORT.md`](bumpin/REPORT.md).

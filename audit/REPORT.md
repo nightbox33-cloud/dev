@@ -612,3 +612,77 @@ upstream **no desplegado**.
 Fuera de ese punto, el core de Liquity v1 y los protocolos del ecosistema integrados
 revisados (ChickenBond, BAMM LUSD de B.Protocol, BAMM THUSD de Threshold) **no presentan
 vulnerabilidades críticas** que cumplan los cuatro criterios exigidos.
+
+---
+
+# Parte II — Auditoría de Bumpin Trade (segundo objetivo)
+
+Programa on-chain `bumpinX5wdLt59DBR3eetmV6xB2W3rNGxMoTSc58ah2` ("Bumpin Trade Program"),
+Solana mainnet-beta. TVL verificado **3 804 239,70 USD** (DefiLlama).
+Informe completo: [`bumpin/REPORT.md`](bumpin/REPORT.md).
+
+## Veredicto: **no crítico demostrado**
+
+El **código fuente del programa es privado**. Los 3 repos públicos de
+`github.com/bumpin-exchange` (`explorer`, `assets`, `rocketmq-clients`) **no contienen el
+programa**; la búsqueda de código en GitHub de `bumpin_trade`,
+`collect_long_open_position_fee` y del program id devuelve **sólo copias del IDL**. El
+binario desplegado (1 978 333 B de BPF) **no tiene verified build** y el programa **no
+tiene `security.txt`** (ambas cosas confirmadas literalmente por el Solana Explorer).
+Además, **no hay RPC disponible** en el entorno: los 8 endpoints RPC públicos probados
+responden `SSL_ERROR_SYSCALL`, y `fetch_page` (que sí alcanza esos hosts) sólo admite
+GET, mientras que Solana RPC exige POST.
+
+Por tanto **no existe reimplementación local posible** y ningún PoC ejecutable. Reportar
+un "crítico" exigiría especular sobre lógica interna no observable, lo que el encargo
+prohíbe. **No se reporta ningún crítico.**
+
+## Lo que sí se verificó sin RPC (y sostiene el veredicto)
+
+1. **IDL on-chain completo** (`idl.solana.com`, 23 chunks). Validado: los layouts
+   calculados con reglas Rust `repr(C)`+bytemuck **coinciden exactamente** con los
+   tamaños de cuenta observados on-chain — `User` 7 608 B, `State` 376 B, `Pool` 568 B,
+   `TradeToken` 216 B (Δ = 0 en todos). El IDL **es** byte-exacto para el binario vivo.
+2. **Mapa de PDAs** derivado localmente y **verificado contra una tx real de mainnet**
+   (`NvPnMH5c…`, `place_portfolio_order`, slot 461 403 966): `state`, `pool_1`,
+   `pool_spl_token_0`, `pool_vault_0`, `rewards_0`, `trade_token_0`,
+   `trade_token_vault_0` — 7/7 coincidencias. Detalle no trivial: las semillas numéricas
+   se codifican **u16 little-endian**, no UTF-8 (con UTF-8 las PDAs no existen).
+3. **Cuentas de producción decodificadas**: `State` (MMR 1 %, min margin $50, discount de
+   referral 9 %, `max_profit_leverage` 200 000), `Pool` 0/1/2 (dual-pool: estable USDC
+   `stable=true` con 74 mercados; base wSOL con 60 y 13), `TradeToken` USDC (99 % de
+   descuento, factor de liquidación 0,5 %, ShadowStorm), `Market` 60 y 72
+   (`share_short=true`, `stable_loss=0`), `Rewards` 0.
+4. **Reconciliación contable**: `TradeToken.total_amount` (1 878 732 899) == balance real
+   de `trade_token_vault_0` (1 878,732899 USDC) ⇒ **Δ = 0**. El tracker de depósitos
+   cuadra: no hay aquí un análogo del C-1 de Liquity.
+5. **Flujo de `collect_rewards` trazado tx a tx** (`2w7iqKPyXna…`, 2026-02-09): deltas
+   USDC por cuenta.
+
+## Hallazgos (ninguno cumple los 4 criterios de crítico)
+
+| id | sev. | título | por qué no es crítico |
+|---|---|---|---|
+| H-1 | **Alta** | 3,8 M USD bajo una única EOA upgradeable (`CSjrvxqcMDpW8eZELyHTFkEN7a3HVHuiY9k2SpjiyC2w` = `State.admin` = upgrade authority), 4 upgrades en 10 meses, sin verified build, sin security.txt | es un **check de privilegio real**, excluido por el encargo |
+| H-2 | Media | `pool_un_claim_amount` = 7 879,89 USDC sin respaldo (`pool_rewards_vault_0` = 0) y > `pool_vault_0` = 800,30 ⇒ **DoS de cobro de recompensas**; la porción DAO va a una **EOA** externa | no hay ruta de `X → Y > X` a costa de terceros; es atasco de función |
+| H-3 | Media | IDL on-chain con `address` = `94bfdkcc…` ≠ programa desplegado (el Explorer lo marca "potentially fraudulent IDL"); 2 cuentas del programa (8 184 B y 9 012 B) **no decodificables** ⇒ superficie de *stake*/*positions* no auditable | opacidad, no exploit |
+| H-4 | Media | Audit CertiK de ene-2025 (44 hallazgos, 0 críticos, 17 "Acknowledged") contra binario vivo de ene-2026 | desfase de información |
+
+## Línea de investigación prioritaria (no demostrable sin fuente)
+
+La **doc del propio IDL** distingue `Pool.fee_reward.fee_amount` — *"fees generated from
+staking, redeeming, and position operations… **used in isolated margin mode** (since fees
+are **actually transferred** each time they are generated)"* — de
+`un_settle_fee_amount` — *"accounting for fees generated from **cross-margin** position
+operations"*. Si la ruta cross-margin **sumara ambas** al distribuir, un operador de
+cross-margin podría acuñar fees de la nada. Es el análogo más directo del C-1 de Liquity
+(contadores de fees físicos vs contables). **No se reporta como crítico** porque exigiría
+demostrar el bug en código de producción y aportar un PoC con PnL positivo, y no hay
+fuente para ninguna de las dos cosas.
+
+## Repos bloqueados (cobertura NO declarada completa)
+
+1. **Código fuente del programa Bumpin** — no existe repo público.
+2. **PDF del informe CertiK** — requiere login ⇒ los 4 *High* no son legibles en detalle.
+3. **Cuentas con sub-structs anidados** (`Pool.balance`, `Pool.config`, `Market.config`,
+   `User.tokens[]`, `User.positions[]`) — legibles sólo vía RPC POST, no disponible.
