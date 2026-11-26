@@ -40,7 +40,7 @@ ruta/call-graph/config real + PoC con `X → Y > X` sobre fondos de terceros).
 |---|---|---|
 | `packages/lib-ethers/deployments/default/mainnet.json` | `version` | `5174ecd0da4842157aba989499200d690b7e374f` |
 | ídem | `startBlock` | `12178551` |
-| ídem | `deploymentDate` | `1617611590000` (2021-04-04) |
+| ídem | `deploymentDate` | `1617611590000` → **2021-04-05 08:33:10 UTC** |
 | `packages/contracts/mainnetDeployment/mainnetDeploymentOutput.json` | direcciones | coincide con el manifiesto |
 
 `git cat-file -t 5174ecd...` → `commit` (traído con `git fetch upstream 5174ecd...`).
@@ -600,7 +600,7 @@ Ver `audit/README.md` (sección "Cómo reproducir") y los 4 PoCs en `audit/`:
 
 **Sí existe una vulnerabilidad crítica en el código clonado y en la ruta productiva**
 (commit `5174ecd0da4842157aba989499200d690b7e374f`, desplegado en mainnet el
-2021-04-04): el tracker `entireSystemColl` de `TroveManager.sol` no resta todo el
+2021-04-05): el tracker `entireSystemColl` de `TroveManager.sol` no resta todo el
 collateral que sale del sistema en las liquidaciones en modo Recovery (L722 en la ruta
 batch; L583 en la secuencial), lo que **infla el TCR**, habilita liquidar troves cuyo ICR
 es **superior** al TCR real mediante la rama *capped*, y transfiere el ~10 % del debt de
