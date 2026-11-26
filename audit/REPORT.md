@@ -278,6 +278,96 @@ Mismo defecto en `liquidateTroves()` (L583). Precio 200 → 140; TCR real =
 [corregido]   carol status: 1      attacker ETH gain:  156357142857142453520  ( 156,36 ETH)
 ```
 
+#### PoC B2 — PnL NETO medido end-to-end (`audit/PoC_NetPnL.js`, `audit/PoC_SequentialNetPnL.js`)
+
+Los PoC anteriores miden la **ganancia ETH acumulada del Stability Pool**. Éste mide el
+**PnL neto del atacante** con la contabilidad completa: se mide la *riqueza total* del
+atacante (wallet ETH + LUSD en wallet + depósito compuesto en el SP + gain ETH pendiente de
+retirar) **antes y después** del ataque, y se hace el `withdrawFromSP` para que el profit
+sea realizable, no solo una账面.
+
+Escenario (idéntico al validado): precio 200 → 170 USD/ETH; TCR real = `1359592418347959723`
+(135,96 %); `carol` (víctima) ICR = `1359999999999999893` (**≥** TCR real ⇒ **no** debería
+liquidarse); `bob` (trigger) ICR = `1274999999999999910`; `alice` (whale) ICR 127,5 %;
+`dennis` (atacante) aporta LUSD al SP y `erin` (tercera parte, **sin trove**) aporta
+50 000 LUSD.
+
+Salida en el **código de producción** (`5174ecd`) — ruta batch:
+
+```
+P = 170000000000000000000  TCR real = 1359592418347959723  recoveryMode = true
+carol (victima) ICR = 1359999999999999893  >= TCR real? true
+SP deposits totales: 596814920398009996875000
+carol status: 3 (3 = liquidada)
+
+================= ATACANTE (dennis) =================
+  delta ETH (retirado del SP): 2961220262354792434981 = 2961 ETH
+  delta USD (ETH): 503407444600314713946770
+  delta LUSD (wallet): 86871509705899677973831
+  >> PnL NETO de RIQUEZA del atacante (ETH): 255
+  >> PnL NETO de RIQUEZA del atacante (USD): 43464033908204395045520   (+43 464 USD)
+================= TERCERA PARTE (erin, sin trove) =================
+  >> PnL NETO de RIQUEZA (USD): 3974347689595575850090                 (+3 974 USD)
+================= STABILITY POOL =================
+  ETH antes/despues: 0 -> 270770217632266640847
+  LUSD deposits: 596814920398009996875000 -> 7943410692110279713669
+  victima carol: coll surplus a su favor: 764705882352940923815
+OK: atacante + 43464 USD ; tercera parte + 3974 USD ; la victima pierde 4000 ETH de
+    collateral (764 ETH vuelve como surplus)
+```
+
+Salida en el **código corregido upstream** (control) — **mismo PoC, mismos parámetros**:
+
+```
+carol status: 1 (3 = liquidada)                      <-- la victima SOBREVIVE
+  delta ETH (retirado del SP): 11794075340935249387 = 11 ETH
+  >> PnL NETO de RIQUEZA del atacante (ETH): 1
+  >> PnL NETO de RIQUEZA del atacante (USD): 172548940659747650790    (+172 USD)
+  SP ETH: 1078765807300045636
+  victima carol: coll surplus a su favor: 0
+```
+
+Ruta **secuencial** (`liquidateTroves`, L583), producción:
+
+```
+LIQ 0x1b1E98 debt 3300000000000000242187     (alice, whale)
+LIQ 0x2E7108 debt 2000000000000000140625     (bob, trigger)
+LIQ 0xcB3E7F debt 500000000000000039046875    (carol, VÍCTIMA)
+carol status: 3
+  ETH retirado: 2980686475243335569129
+  >> PnL NETO de riqueza (ETH): 257
+  >> PnL NETO (USD @170): 43749
+```
+
+**Tabla resumen del PnL neto (medido, no estimado)**
+
+| | producción `5174ecd` batch | producción `5174ecd` secuencial | upstream corregido |
+|---|---|---|---|
+| status de la víctima | **3 (liquidada)** | **3 (liquidada)** | **1 (intacta)** |
+| ETH retirado por el atacante | 2 961,22 | 2 980,69 | 11,79 |
+| **PnL NETO del atacante** | **+255,67 ETH ≈ +43 464 USD** | **+257 ETH ≈ +43 749 USD** | +1,01 ETH ≈ +172 USD |
+| **Δ profit espurio** | — | — | **+254,66 ETH ≈ +43 292 USD** |
+| PnL de la tercera parte depositaria | +23,38 ETH (+3 974 USD) | — | +0,09 ETH (+15 USD) |
+| ETH del SP | 270,77 | 272,55 | 10,79 |
+
+**Nota económica importante (corregida con esta medición):** el atacante **no** se lleva
+`collSurplus` — ése va al `CollSurplusPool` a nombre de la víctima y ella puede reclamarlo
+(verificado: `CollSurplusPool: No collateral available to claim` cuando el atacante lo
+intenta). Y la "tercera parte" depositaria del SP **también gana** proporcionalmente, porque
+el gain del SP se reparte pro-rata. El valor que el atacante **realmente** extrae es el
+**9,45 % del debt** de la víctima liquidada (47 250 USD en este escenario), que el Stability
+Pool paga con el LUSD que quema y que los depositantes recuperan en forma de ETH. Es decir:
+el atacante gana exactamente el *premio de liquidación al MCR* que la víctima no debería
+haber pagado, y lo cobra **a costa del collateral de la víctima**.
+
+**Techo del ataque:** el LUSD del Stability Pool. En este escenario el SP tenía 596 814
+LUSD; la víctima consumía 500 000 ⇒ sólo cabía **una** víctima. Con más LUSD de terceros en
+el SP, más víctimas por lote. Y **sólo una víctima por lote**: tras la primera liquidación
+capped el tracker inflado hace que `backToNormalMode` sea `true`, y el bucle pasa a la
+rama de modo Normal, que **omite** los troves con ICR ≥ MCR. Medido: con 4 víctimas,
+**1 de 4** capturada; con liquidaciones en transacciones separadas, **0** (el tracker se
+reinicia en cada tx ⇒ el TCR real manda y la víctima no es liquidable).
+
 #### PoC C — el mismo tracker también rompe `backToNormalMode`: `audit/PoC_backToNormalMode.js`
 
 `vars.backToNormalMode = !_checkPotentialRecoveryMode(vars.entireSystemColl, vars.entireSystemDebt, _price)`
@@ -466,6 +556,102 @@ TCR real.
 | `HintHelpers` / `MultiTroveGetter` | Sólo lectura. |
 
 ---
+
+### 3.9 Auditoría del historial upstream: TODOS los fixes de seguridad posteriores al commit desplegado
+
+Clon completo de `github.com/liquity/dev` (`git clone --filter=blob:none`, HEAD
+`3e64ee1b52c50d51587c64c1cf75e0ba82934979`) y comparación de ancestros contra el commit
+desplegado:
+
+```
+$ git log --oneline --no-merges 5174ecd..HEAD -- packages/contracts
+$ git merge-base --is-ancestor <fix> 5174ecd
+```
+
+**Resultado: exactamente 7 commits de fix de seguridad posteriores NO están en producción.**
+
+| commit | mensaje | en producción | veredicto |
+|---|---|---|---|
+| `b9dcdbd3` | contracts: Fix back to Normal Mode issue in multi-liquidations | **NO** | ⇒ **es C-1** (el primer intento de fix; `47fb4d56` lo corrige) |
+| `47fb4d56` | contracts: Fix back to Normal Mode issue in multi-liquidations | **NO** | ⇒ **es C-1** (fix final: añade `.sub(collGasCompensation)`) |
+| `7fea84a3` | fix: Prevent underflow in liquidations due to smalll offset | **NO** | **descartado** (ver abajo) |
+| `0e32e8a0` | fix: Remove unused code from SP (offset debt never reaches total deposits) | **NO** | cosmético (simplifica el caso `_debtToOffset == _totalLUSDDeposits`) |
+| `82e2a886` | fix: Make sure P cannot go below 1e9 | **NO** | **descartado** (ver abajo) |
+| `288f500d` | fix: Better precision for 2 P scale changes | **NO** | **descartado** (ver abajo) |
+| `800e820f` | fix: Make SP have min 1 BOLD | **NO** | **no aplica a v1** (refactor de la era BOLD v2; toca `LiquitySafeMath128`, `epoch`, `G`) |
+
+#### 3.9.1 `7fea84a3` — underflow en liquidaciones por offset pequeño → **NO es crítico**
+
+El fix añade `StabilityPool.getMaxAmountToOffset()` y evita que
+`LUSDLossNumerator = _debtToOffset.mul(DECIMAL_PRECISION).sub(lastLUSDLossError_Offset)`
+ underpase (SafeMath `.sub` **revierte** en Solidity 0.6.11).
+
+Análisis matemático exacto (ver `audit/PoC_DeepProbe.js` y el modelo en el informe de
+trabajo):
+
+* `lastLUSDLossError_Offset` es el **resto** de la división, luego siempre cumple
+  `0 ≤ lastLUSDLossError_Offset < totalLUSDDeposits`.
+* El revert exige `debtToOffset·1e18 < lastLUSDLossError_Offset < T`
+  ⇒ `debtToOffset < T/1e18`.
+* Pero `debtToOffset = min(debt_del_trove, T − 1e18)` y `debt_del_trove ≥ MIN_NET_DEBT`
+  = **1 800 LUSD = 1,8e21 wei** (`LiquityBase.MIN_NET_DEBT`).
+* Para `T ≥ 1e18` (1 LUSD) el offset máximo es `T − 1e18`, y `(T−1e18)·1e18 ≥ T` para todo
+  `T > 1e18` ⇒ **el offset máximo nunca produce underflow**.
+* El underflow exigiría `debtToOffset < T/1e18 ≤ 1 000 wei` (¡milésimas de wei!) frente
+  un mínimo de 1 800 LUSD.
+
+⇒ **DoS teórico e inalcanzable**, y en cualquier caso un **revert**, no una extracción de
+valor. **No cumple el criterio de crítico** (no hay `X → Y > X` para el atacante). El propio
+comentario upstream referencia el PR #417 y admite que con `offset ≥ MIN_NET_DEBT` no ocurre.
+
+#### 3.9.2 `82e2a886` + `288f500d` — la escala de `P` puede bajar de `SCALE_FACTOR` → **NO es crítico**
+
+Producción (`StabilityPool.sol` L610-613):
+
+```solidity
+} else if (currentP.mul(newProductFactor).div(DECIMAL_PRECISION) < SCALE_FACTOR) {
+    newP = currentP.mul(newProductFactor).mul(SCALE_FACTOR).div(DECIMAL_PRECISION);
+    currentScale = currentScaleCached.add(1);        // <-- sólo +1
+```
+
+Con `DECIMAL_PRECISION = 1e18 = SCALE_FACTOR²` y `SCALE_FACTOR = 1e9`, se puede alcanzar un
+`newP < 1e9` con `currentScale` incrementado **sólo en 1**, cuando la aritmética de
+`_getCompoundedStakeFromSnapshots` (`d = d0·P/P(0)/SCALE^scaleDiff`, y `scaleDiff ≥ 2 ⇒ 0`)
+asume `P ≥ SCALE_FACTOR`. El fix correcto sube la escala **dos** veces y recalcula `newP`
+con `SCALE_FACTOR²`.
+
+Modelado exacto (ver `audit/ACCOUNTING_...` y el modelo del informe): con `P = 1e12` y
+`f = 1e5`, producción da `newP = 1e8` (escala 1) mientras el fix da `newP = 1e17` (escala 2),
+es decir una discrepancia de **1e9×**.
+
+**Por qué NO es crítico (y por qué NO es un robo de terceros):**
+
+1. La pérdida la reparte **todo** el pool por igual: el mismo `P` y la misma `scale`
+   aplican a todos los depositantes ⇒ **no hay transferencia de valor entre depositantes**,
+   sólo una degradación del compounded deposit de *todos*.
+2. Consecuencia práctica: `compoundedStake` puede caer por debajo del umbral
+   `initialStake/1e9` ⇒ el depósito se vuelve retirable como 0 (el depositante pierde su
+   LUSD) ⇒ es un **DoS/pérdida del pool**, no un enriquecimiento del atacante.
+3. **No es permissionless-profitable**: para que el atacante ganase, tendría que ser un
+   depositante del SP que *no* pierde; pero todos pierden igual.
+4. El estado requerido (`P` entre 1e9 y 1e12 tras un offset) es alcanzable, pero el
+   resultado es symmetric-loss, no `X → Y > X`.
+
+⇒ **Descartado** como crítico; queda como **hygiene de precisión** (severidad media).
+
+#### 3.9.3 Conclusión de la revisión del historial
+
+De los **7** fixes de seguridad upstream no desplegados, **2 son C-1** (el mismo bug,
+corregido en dos commits) y los otros **5** son: 1 cosmético, 1 refactor de la era BOLD (no
+aplica a v1), y **3 que he descartado como críticos con modelado matemático explícito**
+(1 DoS inalcanzable por `MIN_NET_DEBT`, 2 pérdida simétrica sin transferencia de valor).
+
+**No hay un segundo 0-day de extracción de valor en el historial upstream pendiente de
+desplegar.** El resto del core de Liquity v1 (ActivePool, DefaultPool, LUSDToken,
+StabilityPool en sus rutas de depósito/retiro/compounding, BorrowerOperations,
+SortedTroves, PriceFeed, HintHelpers, LQTY staking/issuance, LPRewards, CollSurplusPool,
+GasPool) ha sido revisado y no presenta rutas de extracción de valor permissionless con PnL
+positivo demostrable.
 
 ## 4. Fallback de ecosistema (activado por C-1 y ejecutado igualmente)
 
