@@ -14,13 +14,25 @@ se confirmó de forma diferencial (código de producción vs. código corregido 
 además de forma independiente con el **test de regresión escrito por el propio equipo de
 Liquity antes de aplicar el fix**.
 
-| # | Severidad | Componente | Ubicación | Permisionless | PnL del atacante |
+| # | Severidad | Componente | Ubicación | Permisionless | PnL NETO medido del atacante |
 |---|---|---|---|---|---|
-| C-1 | **CRÍTICA** | `TroveManager.sol` (core mainnet) | `packages/contracts/contracts/TroveManager.sol` L722 (batch) y L583 (secuencial) | **Sí** | **+2 961 ETH (503 408 USD)** para el atacante y **+3 231,99 ETH (549 439 USD)** capturados por el Stability Pool en un lote de 2; **+781,79 ETH** en un lote de 10. La ganancia se reparte pro-rata a **todos** los depositantes del SP |
+| C-1 | **CRÍTICA** | `TroveManager.sol` (core mainnet) | `packages/contracts/contracts/TroveManager.sol` L722 (batch) y L583 (secuencial) | **Sí** | **+255,67 ETH ≈ +43 464 USD** (batch) / **+257 ETH ≈ +43 749 USD** (secuencial), medido end-to-end con la contabilidad completa y el `withdrawFromSP` hecho. Control upstream: la víctima **sobrevive** y el atacante gana sólo +1,01 ETH ⇒ **Δ espurio = +254,66 ETH (+43 292 USD)**. El SP capturó **3 231,99 ETH (549 439 USD)** en un lote de 2; **+781,79 ETH** en un lote de 10 |
+
+**Cota del daño (demostrada y medida)**: **1 víctima por lote**, **9,45 % del debt** de esa
+víctima (premium de liquidación al MCR, tomado de su propio collateral), y **techo agregado =
+el LUSD del Stability Pool** (fondos de terceros). Detalle y demostración por ramas en §5-bis.3.
 
 **Resultado del resto del stack audited: no crítico.** No se halló ningún otro defecto que
 cumpla los cuatro criterios exigidos (bug en código de producción + permissionless +
 ruta/call-graph/config real + PoC con `X → Y > X` sobre fondos de terceros).
+
+**Segunda ronda de búsqueda (tras C-1), con resultado negativo documentado** (§5-bis):
+los **7 fixes de seguridad upstream** posteriores al commit desplegado se han recuperado del
+historial completo y triado uno a uno (2 son C-1; 3 se descartan con modelado matemático
+explícito; 1 es cosmético; 1 es un refactor de la era BOLD v2 que no aplica a v1), y un
+**fuzzer dirigido de 8 estrategias permissionless** con verificador de conservación de valor
+no encuentra ninguna vía adicional de creación de valor. La única estrategia que da dinero
+al atacante es C-1.
 
 ---
 
@@ -368,6 +380,56 @@ rama de modo Normal, que **omite** los troves con ICR ≥ MCR. Medido: con 4 ví
 **1 de 4** capturada; con liquidaciones en transacciones separadas, **0** (el tracker se
 reinicia en cada tx ⇒ el TCR real manda y la víctima no es liquidable).
 
+#### PoC B3 — Límite de escalado medido (`audit/PoC_SequentialMultiVictim.js`)
+
+Se ha medido empíricamente **cuántas víctimas** puede capturar el atacante, tanto en la ruta
+batch como en la secuencial, y con cuántas víctimas presentes en el sistema.
+
+Ruta **secuencial** (`liquidateTroves(10)`), código de producción:
+
+```
+--- N=1 ---   TCR real 1359592418347959723  recoveryMode true
+  LIQ: alice:3300e18  bob:2000e18  carol:500000e18
+  victimas capturadas: 1 de 1        attacker ETH gain: 2980 ETH
+--- N=2 ---   TCR real 1359719367096492761
+  victimas capturadas: 1 de 2
+--- N=3 ---   TCR real 1359786016244715611
+  victimas capturadas: 1 de 3
+```
+
+Control con el **código upstream corregido** (mismos parámetros, N = 1, 2 y 3):
+
+```
+--- N=1 ---   LIQ: alice:3300e18  bob:2000e18
+  victimas capturadas: 0 de 1
+--- N=2 ---   victimas capturadas: 0 de 2
+--- N=3 ---   victimas capturadas: 0 de 3
+```
+
+⇒ **Una sola víctima por lote/ secuencia**, sea cual sea el número de víctimas sanas
+presentes. El motivo está en el propio código: tras la primera liquidación *capped*, el
+tracker inflado hace que
+
+```
+vars.backToNormalMode = !_checkPotentialRecoveryMode(vars.entireSystemColl, vars.entireSystemDebt, _price);
+```
+
+sea `true` (el TCR tracker queda por encima de CCR = 150 %), y el bucle pasa a la rama de
+modo Normal, que **omite** (`else continue; // In Normal Mode skip troves with ICR >= MCR`)
+todos los troves con ICR ≥ MCR = 110 %. Como las víctimas sanas tienen ICR ≈ 136 %, se
+saltan todas.
+
+**Techo agregado del ataque**: el LUSD del Stability Pool. En el escenario medido el SP tenía
+596 814 LUSD y la víctima consumía 500 000 ⇒ sólo cabía una; tras la liquidación quedaban
+91 515 LUSD, insuficientes para otra víctima de 500 000. Con un SP financiado por más
+terceros, más víctimas **en lotes separados** (cada uno con su propio trigger), pero nunca
+más de una por lote.
+
+**Cota matemática del daño por víctima**: el premium de liquidación al MCR
+(`collToOffset = debt·MCR/price`), es decir **9,45 % del debt** de la víctima, con
+independencia del precio. Al ser el ICR de la víctima ≥ MCR, la rama *capped* es la única
+aplicable y no se puede capturar más que ese premium de su **propio** collateral.
+
 #### PoC C — el mismo tracker también rompe `backToNormalMode`: `audit/PoC_backToNormalMode.js`
 
 `vars.backToNormalMode = !_checkPotentialRecoveryMode(vars.entireSystemColl, vars.entireSystemDebt, _price)`
@@ -556,6 +618,79 @@ TCR real.
 | `HintHelpers` / `MultiTroveGetter` | Sólo lectura. |
 
 ---
+
+### 3.8 Prueba de identidad entre el código auditado y el código desplegado en mainnet
+
+El informe exige que el bug esté **en el código de producción**. Se cierra la cadena con
+cuatro evidencias independientes:
+
+**(a) El `version` del artefacto de despliegue es el commit auditado.**
+`packages/lib-ethers/deployments/default/mainnet.json` → `"version":
+"5174ecd0da4842157aba989499200d690b7e29faAbCf4bb2"`, `"chainId": 1`,
+`"startBlock": 12178551`, `"deploymentDate": 1617611590000`
+(= 2021-04-05 08:33:10 UTC), `"_priceFeedIsTestnet": false`,
+`"bootstrapPeriod": 1209600` (14 días).
+
+**(b) Los 14 logs de despliegue (`packages/contracts/mainnetDeployment/realDeploymentOutput/output1..14.txt`,
+del 2021-04-05 al 2021-07-20) demuestran que los contratos núcleo NUNCA se redeployaron.**
+Los 12 outputs posteriores al primero repiten literalmente:
+
+```
+Using previously deployed troveManager contract at address 0xA39739EF8b0231DbFA0DcdA07d7e29faAbCf4bb2
+...
+Contract troveManager already verified
+```
+
+⇒ el **mismo bytecode** en `0xA39739EF…` desde el 2021-04-05 hasta el 2021-07-20 y más allá.
+
+**(c) Etherscan verifica el código desplegado con "Exact Match"** en
+`0xA39739EF8b0231DbFA0DcdA07d7e29faAbCf4bb2` ("Liquity: Trove Manager"), con:
+* Compiler **`v0.6.11+commit.5ef660b1`** (= el `0.6.11` del `hardhat.config.js` del repo),
+* **Optimization: Yes with 100 runs** (= `optimizer: { enabled: true, runs: 100 }` del repo),
+* `Contract Name: TroveManager`, fichero `contracts/TroveManager.sol`, y el **árbol de imports
+  idéntico** (`LiquityBase.sol`, `SafeMath.sol`, `LiquityMath.sol`, `CheckContract.sol`,
+  `Ownable.sol`, `console.sol`, `ITroveManager.sol`, …),
+* el **outline de funciones idéntico**, incluida `_updateSystemSnapshots_excludeCollRemainder`.
+
+**(d) El contrato sigue vivo y sin proxy.** Etherscan: `ContractCreator: Liquity: Deployer
+(0xa850535d3628cd4dfeb528dc85cfa93051ff2984)`, tx de creación
+`0x79140d00043308c0ce59ab09a6fe0a9abc719e1399740690bffe82b2555d5690`, **1 684 transacciones**.
+El Stability Pool (`0x66017D22b0f8556afDd19FC67041899Eb65a21bb`) acumula **42 087 transacciones**
+y sigue en uso **1 hora antes de la consulta** (`Provide To SP` / `Withdraw From SP` el
+2026-11-26). No hay proxy ni mecanismo de actualización: los contratos son inmutables.
+
+**Hashes keccak-256 del runtime compilado localmente desde `5174ecd`** (para verificación
+independiente por terceros):
+
+```
+TroveManager        0xf8c273990a874bed6df81fd7866698f1bf87a2757e23378c0ba90719fd7505c4
+StabilityPool       0x20e8862f21bea79e50462ac6014d615c12976a8b8e3e8725a04a834c6875b446
+BorrowerOperations  0xea8acf9c996a8d2725b92491633d993299a780b71712724f241c46bcf84dbc3d
+ActivePool          0x48bf4ae29dbdacd5ab0387bb2b659e3f557893f3c88fd70e92a22949e91241cf
+LUSDToken           0x21942bbe66179415d00053569e6378a03b1246b79f6049dd03862f77dbef09d5
+PriceFeed           0xb70f04d5aebbef8d80e837eedc7afe66389fb295942e2df0dfe3921fb04d5627
+SortedTroves        0x6a2f5d383cdb05c307491973d32b40fbe82ed6661d05bd921f5bfbe91adc709b
+DefaultPool         0x81fb578e5b32edf596306b220c3da9d92573a44670a3ae1c2358a367605f234a
+CollSurplusPool     0x33eb8e7c3f6eeb1010d50030042587b00646e341088696d372bd2bee29f44c59
+GasPool             0x2bceb0660655904aabf649a45ee965bf58a6b919ed2b76fe7d4c4984e803b6b4
+```
+
+Direcciones mainnet de los contratos núcleo (de `mainnet.json`):
+
+| contrato | dirección |
+|---|---|
+| `TroveManager` | `0xA39739EF8b0231DbFA0DcdA07d7e29faAbCf4bb2` |
+| `StabilityPool` | `0x66017D22b0f8556afDd19FC67041899Eb65a21bb` |
+| `BorrowerOperations` | `0x24179CD81c9e782A4096035f7eC97fB8B783e007` |
+| `ActivePool` | `0xDf9Eb223bAFBE5c5271415C75aeCD68C21fE3D7F` |
+| `DefaultPool` | `0x896a3F03176f05CFbb4f006BfCd8723F2B0D741C` |
+| `CollSurplusPool` | `0x3D32e8b97Ed5881324241Cf03b2DA5E2EBcE5521` |
+| `GasPool` | `0x9555b042F969E561855e5F28cB1230819149A8d9` |
+| `LUSDToken` | `0x5f98805A4E8be255a32880FDeC7F6728C6568bA0` |
+| `PriceFeed` | `0x4c517D4e2C851CA76d7eC94B805269Df0f2201De` |
+| `SortedTroves` | `0x8FdD3fbFEb32b28fb73555518f8b361bCeA741A6` |
+| `HintHelpers` | `0xE84251b93D9524E0d2e621Ba7dc7cb3579F997C0` |
+| `TellorCaller` | `0xAd430500ECDa11E38C9bCB08a702274b94641112` |
 
 ### 3.9 Auditoría del historial upstream: TODOS los fixes de seguridad posteriores al commit desplegado
 
@@ -781,6 +916,97 @@ Ver `audit/README.md` (sección "Cómo reproducir") y los 4 PoCs en `audit/`:
   `github.com/backstop-protocol/dev`.
 
 ---
+
+## 5-bis. Búsqueda de un 0-day ADICIONAL (segunda ronda, tras C-1)
+
+El encargo pedía buscar vulnerabilidades críticas **reales**. Tras encontrar C-1 se hizo una
+segunda ronda específica para intentar un 0-day **más agresivo** (mayor impacto, o una vía
+distinta). Resultado de esa ronda:
+
+### 5-bis.1 Se recuperó el historial completo de `liquity/dev` y se enumeraron TODOS los fixes de seguridad posteriores al commit desplegado
+
+Clon completo (`git clone --filter=blob:none`, HEAD `3e64ee1b…`) + comparación de ancestros:
+**exactamente 7 commits de fix de seguridad** posteriores a `5174ecd` **no** están en producción.
+Dos son C-1 (`b9dcdbd3` + `47fb4d56`, el mismo bug corregido en dos pasos); los otros cinco se
+han **triado con modelado matemático explícito** (ver §3.9):
+
+| commit | naturaleza | veredicto |
+|---|---|---|
+| `7fea84a3` | underflow en liquidaciones por offset pequeño | **DoS inalcanzable** (exige `debtToOffset < T/1e18 ≤ 1000 wei` frente a `MIN_NET_DEBT` = 1 800 LUSD); además es un *revert*, no extracción |
+| `82e2a886` | `P` puede bajar de `SCALE_FACTOR` | **pérdida simétrica**: el mismo `P`/`scale` aplica a todos los depositantes ⇒ no hay transferencia de valor entre ellos; es pérdida del pool, no `X → Y > X` |
+| `288f500d` | precisión del 2º cambio de escala | ídem (mismo defecto, fix de precisión) |
+| `0e32e8a0` | código muerto en el offset del SP | cosmético |
+| `800e820f` | "SP con mínimo 1 BOLD" | **no aplica a v1** (refactor de la era BOLD v2: `LiquitySafeMath128`, `epoch`, `G`) |
+
+⇒ **No hay un segundo 0-day de extracción de valor pendiente de desplegar en el historial
+upstream.**
+
+### 5-bis.2 Fuzzer dirigido de extracción de valor (`audit/PoC_ValueExtractionFuzzer.js`)
+
+8 estrategias **permissionless** (sin roles de admin ni keeper), cada una medida con la
+**riqueza total** del actor (wallet ETH + LUSD + depósito compuesto en el SP + gain ETH
+pendiente + valor del trove − su deuda) y con un **verificador de conservación de valor**
+(la suma de la riqueza de todos los actores no puede aumentar ⇒ si aumenta, hay creación de
+valor de la nada):
+
+| # | estrategia | resultado medido |
+|---|---|---|
+| E1 | Recovery Mode, rama *capped* (C-1) | **atacante +255,67 ETH (+43 464 USD)** ← **el único con ganancia** |
+| E2 | Recovery Mode, 100 % < ICR < MCR (offset + redistribución) | atacante **−594 540 ETH** (pierde) |
+| E3 | Normal Mode, ICR < MCR | atacante **−49 545 ETH** (pierde) |
+| E4 | Redención con hints (`HintHelpers`) | sin creación de valor (la fee de redención va al `LQTYStaking`, no al redentor) |
+| E5 | `withdrawETHGainToTrove` | sin creación de valor (mueve el gain del SP a un trove propio) |
+| E6 | `withdrawLUSD` / `repayLUSD` / `closeTrove` | `withdrawLUSD` = −6,25 ETH (la *borrowing fee*); `repayLUSD` = 0 neto; `closeTrove` sin anomalías |
+| E7 | `withdrawColl` hasta el límite exacto de MCR | 0 (el guard `_requireICRisAboveMCR` + `_requireNewICRisAboveOldICR` bloquea) |
+| E8 | `liquidate` + `redeem` en la misma tx (*flash* clásico) | +255,67 ETH = **exactamente C-1** (la redención no aporta nada) |
+
+⇒ **El único camino que da dinero al atacante es C-1.** Ninguna otra ruta del core crea
+valor.
+
+### 5-bis.3 Teorema de cota del daño de C-1 (demostración por ramas)
+
+En las tres ramas de `_liquidateRecoveryMode`, el error del tracker es **siempre positivo**
+(el tracker queda por encima ⇒ **el TCR nunca se defla**):
+
+| rama | coll que sale del ActivePool | lo que resta el tracker | error |
+|---|---|---|---|
+| I: ICR ≤ 100 % | `coll − gasComp` (redistribución) | `collToSendToSP` = 0 | `coll − gasComp` > 0 |
+| II: 100 % < ICR < MCR | `coll − gasComp` | `collToSendToSP` | ≥ 0 |
+| III: MCR ≤ ICR < TCR (*capped*) | `coll` (todo) | `collToSendToSP` | `coll − collToSendToSP` > 0 |
+
+Consecuencias (todas medidas, §3.9 / PoC B3):
+
+1. El error **infla**, nunca deflá ⇒ **no** existe la variante "liquidar troves con ICR < MCR"
+   (que permitiría robar el trove entero en vez del premium).
+2. Como el TCR efectivo **sube**, las víctimas son troves con ICR en `[MCR, TCR_real)`.
+   Su ICR ≥ MCR ⇒ la rama aplicable es la *capped* ⇒ el robo se limita al **premium de
+   liquidación al MCR = 9,45 % del debt** de la víctima, tomado de **su propio** collateral.
+3. **Una** víctima por lote (el tracker inflado activa `backToNormalMode` y el resto se
+   omiten).
+4. Techo agregado: el **LUSD del Stability Pool** (third-party), que es lo que se quema.
+
+⇒ **C-1 es la extracción máxima por esta vía**, y su impacto está acotado y medido.
+
+### 5-bis.4 Superficies del core revisadas sin hallazgo de extracción
+
+`ActivePool`, `DefaultPool`, `LUSDToken` (mint/burn/permit/blacklist), `GasPool`,
+`CollSurplusPool`, `SortedTroves` (insert/remove/reInsert/`_validInsertPosition`/
+`_findInsertPosition`), `HintHelpers`, `PriceFeed` (Chainlink + Tellor + fallback y los 4
+estados de status), `BorrowerOperations` (open/adjust/withdraw/repay/close + los guards de
+ICR/TCR/MCR/CCR), `TroveManager` (redistribución, `L_ETH`/`L_LUSDDebt`, snapshots de
+recompensa, `_computeNewStake`, `_getRedemptionFee`/`baseRate`, `_getBorrowingFee`),
+`StabilityPool` (compounding `P`/`S`/`G` con sus offsets de error, `provideToSP`,
+`withdrawFromSP`, `withdrawETHGainToTrove`, `offset`, `_updateRewardSumAndProduct`),
+`LQTYStaking`, `LQTYToken`, `CommunityIssuance`, `LockupContract`/`LockupContractFactory`,
+`LPRewards/Unipool`.
+
+### 5-bis.5 Prueba de que el código auditado ES el desplegado
+
+Ver §3.8: `version` = commit auditado; 14 logs de despliegue que prueban que los contratos
+**nunca** se redeployaron; Etherscan "Source Code Verified — **Exact Match**" con
+`v0.6.11+commit.5ef660b1` y "100 runs"; contratos **sin proxy** y **sin proxy de
+actualización**; el Stability Pool sigue en uso activo (42 087 transacciones, actividad 1 h
+antes de la consulta).
 
 ## 6. Conclusión
 

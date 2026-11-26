@@ -289,3 +289,32 @@ Si la ruta cross-margin sumara ambas al distribuir, un operador de cross-margin 
 acuñar fees.
 
 Documentación completa en [`bumpin/`](bumpin/) — ver [`bumpin/REPORT.md`](bumpin/REPORT.md).
+
+---
+
+# Actualización — segunda ronda de búsqueda de un 0-day en Liquity v1
+
+Tras C-1 se hizo una ronda específica para intentar un 0-day **más agresivo**. Resultados:
+
+| trabajo | resultado |
+|---|---|
+| Historial completo de `liquity/dev` + `git merge-base --is-ancestor` | **7 fixes de seguridad posteriores al commit desplegado y NO desplegados**. 2 = C-1. `7fea84a3` (underflow del SP) **descartado**: el revert exige `debtToOffset < T/1e18 ≤ 1000 wei` frente a `MIN_NET_DEBT` = 1 800 LUSD ⇒ DoS inalcanzable. `82e2a886`+`288f500d` (escala de `P`) **descartados**: pérdida simétrica, sin transferencia de valor entre depositantes. `0e32e8a0` cosmético. `800e820f` no aplica a v1 |
+| `audit/PoC_ValueExtractionFuzzer.js` — 8 estrategias permissionless + verificador de conservación de valor | **sólo C-1** da ganancia (+255,67 ETH). E2 −594 540 ETH, E3 −49 545 ETH, E4/E5/E6/E7 sin creación de valor, E8 = C-1 |
+| `audit/PoC_NetPnL.js` / `PoC_SequentialNetPnL.js` | **PnL NETO del atacante medido end-to-end**: +255,67 ETH (+43 464 USD) batch, +257 ETH (+43 749 USD) secuencial. Control upstream: la víctima sobrevive, atacante +1,01 ETH ⇒ **Δ = +254,66 ETH** |
+| `audit/PoC_SequentialMultiVictim.js` | **límite de escalado medido**: 1 víctima por secuencia (N=1,2,3 → siempre 1). Control upstream: **0** en los tres casos |
+| Prueba de identidad código auditado == código desplegado | `version` = commit auditado; **14 logs de despliegue** prueban que los contratos **nunca** se redeployaron; Etherscan "Exact Match" con `v0.6.11+commit.5ef660b1` y "100 runs"; **sin proxy**; el Stability Pool sigue activo (42 087 tx, actividad 1 h antes) |
+| Teorema de cota del daño de C-1 | El error del tracker es **siempre positivo** (nunca defla el TCR) ⇒ no existe la variante "liquidar troves con ICR < MCR". La victimización queda acotada al **9,45 % del debt** de la víctima, **1 por lote**, con techo = el LUSD del SP |
+
+**Conclusión**: no hay un segundo 0-day. C-1 es real, permissionless, está en el código
+desplegado (verificado) y es la **extracción máxima** por esa vía.
+
+## PoCs añadidos en esta ronda
+
+| fichero | qué mide |
+|---|---|
+| `audit/PoC_NetPnL.js` | PnL NETO del atacante batch (producción vs upstream corregido) |
+| `audit/PoC_SequentialNetPnL.js` | PnL NETO del atacante en la ruta secuencial |
+| `audit/PoC_SequentialMultiVictim.js` | límite de escalado (N = 1, 2, 3 víctimas) |
+| `audit/PoC_ValueExtractionFuzzer.js` | 8 estrategias permissionless + conservación de valor |
+| `audit/PoC_MaxScale.js` | análisis del tracker inflado con N víctimas |
+| `audit/PoC_DeepProbe.js` | sondas sobre el underflow del SP y la escala de `P` |
