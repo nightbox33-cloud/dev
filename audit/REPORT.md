@@ -16,7 +16,7 @@ Liquity antes de aplicar el fix**.
 
 | # | Severidad | Componente | Ubicación | Permisionless | PnL del atacante |
 |---|---|---|---|---|---|
-| C-1 | **CRÍTICA** | `TroveManager.sol` (core mainnet) | `packages/contracts/contracts/TroveManager.sol` L722 (batch) y L583 (secuencial) | **Sí** | **+547 250 USD** (3 219,12 ETH) en un lote pequeño; **+781,79 ETH** en un lote de 10; la ganancia se reparte a **todos** los depositantes del SP |
+| C-1 | **CRÍTICA** | `TroveManager.sol` (core mainnet) | `packages/contracts/contracts/TroveManager.sol` L722 (batch) y L583 (secuencial) | **Sí** | **+2 961 ETH (503 408 USD)** para el atacante y **+3 231,99 ETH (549 439 USD)** capturados por el Stability Pool en un lote de 2; **+781,79 ETH** en un lote de 10. La ganancia se reparte pro-rata a **todos** los depositantes del SP |
 
 **Resultado del resto del stack audited: no crítico.** No se halló ningún otro defecto que
 cumpla los cuatro criterios exigidos (bug en código de producción + permissionless +
@@ -263,7 +263,9 @@ dennis ETH gain: 12876470588235144580 wei (12,88 ETH)   <- sólo la liquidación
 | | producción `5174ecd` | upstream corregido |
 |---|---|---|
 | status de la víctima | **3 (liquidada)** | **1 (intacta)** |
-| ganancia del atacante | **3 219,12 ETH ≈ 547 250 USD** | 12,88 ETH |
+| ganancia de `dennis` (atacante) | **2 961,22 ETH ≈ 503 408 USD** | 12,88 ETH |
+| ganancia de `erin` (depositora de terceros, sin trove) | **270,77 ETH ≈ 46 031 USD** | 0 |
+| **total capturado por el Stability Pool** | **3 231,99 ETH ≈ 549 439 USD** | 12,876 ETH (legítimo, sólo la liquidación de bob) |
 
 #### PoC B — ruta secuencial: `audit/PoC_liquidateTrovesTCRBug.js`
 
@@ -563,7 +565,7 @@ Sin contratos (sólo scripts de despliegue). **No aplica.**
 | `npx hardhat test test/PoC_liquidateTrovesTCRBug.js` (prod) | `✔ victim trove with ICR >= real TCR is capped-liquidated by liquidateTroves()` — carol status 3, atacante +4 065,29 ETH |
 | `npx hardhat test test/PoC_liquidateTrovesTCRBug.js` (HEAD corregido) | VICTIM **falla** (victim status 1, atacante +156,36 ETH) ⇒ control diferencial |
 | `npx hardhat test test/PoC_backToNormalMode.js` (prod) | `✔ after a capped liquidation the sequence still thinks it is in Recovery Mode` — carol status 3, atacante +4 065,29 ETH |
-| `npx hardhat test test/Upstream_BatchRecovery_Test.js` (prod) | **`2 passing, 4 failing`**, incluidos *"A trove over TCR is not liquidated"* (-2 vs +1) y *"Stability Pool profit matches"* (36,815 vs 21,89 ETH) |
+| `npx hardhat test test/Upstream_BatchRecovery_Test.js` (prod) | **`2 passing, 4 failing`**, incluidos *"A trove over TCR is not liquidated"* (-2 vs +1) y *"Stability Pool profit matches"* (SP ETH 36,815 en prod vs 21,89 esperado ⇒ **+14,925 ETH de más**, en el escenario propio de ese test) |
 | `npx hardhat test test/Upstream_BatchRecovery_Test.js` (HEAD) | `5 passing, 1 failing` (el resto por `getMaxAmountToOffset`, no relacionado) |
 | `npx hardhat test test/PoC_batchTCRBug_max.js` (prod) | `✔` — 10 liquidaciones (4 espurias), atacante **+781,79 ETH**, 4 víctimas con status `3` |
 | `npx hardhat test test/PoC_batchTCRBug_max.js` (HEAD) | 6 liquidaciones, 4 víctimas con status `1`, atacante **+469,07 ETH** ⇒ delta espurio **+312,72 ETH** |
@@ -603,7 +605,8 @@ collateral que sale del sistema en las liquidaciones en modo Recovery (L722 en l
 batch; L583 en la secuencial), lo que **infla el TCR**, habilita liquidar troves cuyo ICR
 es **superior** al TCR real mediante la rama *capped*, y transfiere el ~10 % del debt de
 la víctima al Stability Pool — de donde el atacante (y cualquier otro depositante del
-SP) lo retira. Permissionless, con PnL de **547 250 USD** en un solo lote, y con el fix
+SP) lo retira. Permissionless, con **549 439 USD** capturados por el Stability Pool en un
+lote de dos troves (y **781,79 ETH** en un lote de diez), y con el fix
 upstream **no desplegado**.
 
 Fuera de ese punto, el core de Liquity v1 y los protocolos del ecosistema integrados

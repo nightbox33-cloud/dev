@@ -109,10 +109,10 @@ terceros**; la ganancia se reparte pro-rata entre **todos** los depositantes del
 
 **Prueba diferencial** (mismo test contra el código **corregido** upstream, HEAD):
 
-| código | status de la víctima | ganancia del atacante |
-|---|---|---|
-| prod `5174ecd` (mainnet) | `3` (liquidada) | **3219,12 ETH** (547 250 USD) |
-| upstream corregido (`HEAD`) | `1` (intacta) | 12,88 ETH (sólo la liquidación legítima de bob) |
+| código | status de la víctima | ganancia de `dennis` (atacante) | ganancia de `erin` (tercera parte) | total capturado por el SP |
+|---|---|---|---|---|
+| prod `5174ecd` (mainnet) | `3` (liquidada) | **2 961,22 ETH** (503 408 USD) | **270,77 ETH** (46 031 USD) | **3 231,99 ETH** (549 439 USD) |
+| upstream corregido (`HEAD`) | `1` (intacta) | 11,798 ETH (sólo la liquidación legítima de bob) | 1,079 ETH | 12,876 ETH (legítimo) |
 
 `audit/PoC_liquidateTrovesTCRBug.js` — misma clase de bug en la ruta secuencial
 `liquidateTroves()` (línea 583):
